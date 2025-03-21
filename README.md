@@ -8,6 +8,8 @@ Blazingly Fast and Embarrassingly Simple End-to-End Full-Length Song Generation.
 
 ## 📣 update
 
+[2025-03-21] ⚒️: Code refactored, ultra-fast generation speed. 4 minutes 45 seconds of music generated in less than 20 seconds, 1 minute 35 seconds of music generated in less than 7 seconds. Added more tunable parameters for more creative freedom. Optional model unloading.
+
 [2025-03-16]⚒️: Released version v2.0.0. Supports full-length music generation, 4 minutes only takes 62 seconds.
 
 ![](https://github.com/billwuhao/ComfyUI_DiffRhythm/blob/master/images/2025-03-16_03-53-48.png)

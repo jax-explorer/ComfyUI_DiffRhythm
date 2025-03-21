@@ -1,22 +1,5 @@
-# Copyright (c) 2025 ASLP-LAB
-#               2025 Huakang Chen  (huakang@mail.nwpu.edu.cn)
-#               2025 Guobin Ma     (guobin.ma@gmail.com)
-#
-# Licensed under the Stability AI License (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#   https://huggingface.co/stabilityai/stable-audio-open-1.0/blob/main/LICENSE.md
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
-import torchaudio
-from mutagen.mp3 import MP3
 import torch
+import torchaudio
 from einops import rearrange
 import sys
 import os
@@ -34,8 +17,47 @@ from diffrhythm_utils import (
     get_negative_style_prompt,
     get_reference_latent,
     CNENTokenizer,
-    load_checkpoint,
 )
+
+
+def load_checkpoint(
+    model: torch.nn.Module,
+    ckpt_path: str,
+    device: torch.device,
+    use_ema: bool = True
+):
+    model = model.half()
+    if device == 'mps':
+        model = model.float()
+
+    ckpt_type = ckpt_path.split(".")[-1]
+    try:
+        if ckpt_type == "safetensors":
+            from safetensors.torch import load_file
+            checkpoint = load_file(ckpt_path)
+        else:
+            checkpoint = torch.load(ckpt_path, weights_only=True)
+    except Exception as e:
+        raise
+
+    try:
+        if use_ema:
+            if ckpt_type == "safetensors":
+                checkpoint = {"ema_model_state_dict": checkpoint}
+            checkpoint["model_state_dict"] = {
+                k.replace("ema_model.", ""): v
+                for k, v in checkpoint["ema_model_state_dict"].items()
+                if k not in ["initted", "step"]
+            }
+            model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+        else:
+            if ckpt_type == "safetensors":
+                checkpoint = {"model_state_dict": checkpoint}
+            model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+    except Exception as e:
+        raise
+
+    return model.to(device)
 
 
 def inference(
@@ -46,40 +68,46 @@ def inference(
     duration,
     style_prompt,
     negative_style_prompt,
+    steps,
+    cfg_strength,
     start_time,
+    odeint_method,
+    sway_sampling_coef=None,
     chunked=False,
+    vocal_flag=False,
 ):
-        with torch.inference_mode():
-            generated, _ = cfm_model.sample(
-                cond=cond,
-                text=text,
-                duration=duration,
-                style_prompt=style_prompt,
-                negative_style_prompt=negative_style_prompt,
-                steps=32,
-                cfg_strength=4.0,
-                start_time=start_time,
-            )
-        
-
-        generated = generated.to(torch.float32)
-        latent = generated.transpose(1, 2)  # [b d t]
-
-        output = decode_audio(latent, vae_model, chunked=chunked)
-
-        # Rearrange audio batch to a single sequence
-        output = rearrange(output, "b d n -> d (b n)")
-        # Peak normalize, clip, convert to int16, and save to file
-        output = (
-            output.to(torch.float32)
-            .div(torch.max(torch.abs(output)))
-            .clamp(-1, 1)
-            .mul(32767)
-            .to(torch.int16)
-            .cpu()
+    with torch.inference_mode():
+        generated, _ = cfm_model.sample(
+            cond=cond,
+            text=text,
+            duration=duration,
+            style_prompt=style_prompt,
+            negative_style_prompt=negative_style_prompt,
+            steps=steps,
+            cfg_strength=cfg_strength,
+            start_time=start_time,
+            odeint_method=odeint_method,
+            vocal_flag=vocal_flag,
+            sway_sampling_coef=sway_sampling_coef,
         )
+    
+    generated = generated.to(torch.float32)
+    latent = generated.transpose(1, 2)  # [b d t]
 
-        return output
+    output = decode_audio(latent, vae_model, chunked=chunked)
+    
+    # Rearrange audio batch to a single sequence
+    output = rearrange(output, "b d n -> d (b n)")
+    # Peak normalize, clip, convert to int16, and save to file
+    output = (
+        output.to(torch.float32)
+        .div(torch.max(torch.abs(output)))
+        .clamp(-1, 1)
+        .mul(32767)
+        .to(torch.int16)
+        .cpu()
+    )
+    return output
 
 
 class MultiLinePrompt:
@@ -94,7 +122,7 @@ class MultiLinePrompt:
                 },
         }
 
-    CATEGORY = "MW-DiffRhythm"
+    CATEGORY = "MW/MW-DiffRhythm"
     RETURN_TYPES = ("STRING",)
     RETURN_NAMES = ("prompt",)
     FUNCTION = "promptgen"
@@ -115,13 +143,13 @@ class DiffRhythmRun:
     model_path = os.path.join(comfy_path, "models", "TTS")
     models = ["cfm_model.pt", "cfm_full_model.pt"]
 
+    model_cache = {"cfm": None, "muq": None, "vae": None}
     @classmethod
     def INPUT_TYPES(cls):
                
         return {
             "required": {
                 "model": (cls.models, {"default": "cfm_full_model.pt"}),
-                # "audio_length": ([95, 285], {"default": 285, "tooltip": "The length of the audio to generate."}),
                 "style_prompt": ("STRING", {
                     "multiline": True, 
                     "default": ""}),
@@ -130,11 +158,15 @@ class DiffRhythmRun:
                 "lyrics_prompt": ("STRING",),
                 "style_audio": ("AUDIO", ),
                 "chunked": ("BOOLEAN", {"default": False, "tooltip": "Whether to use chunked decoding."}),
+                "unload_model": ("BOOLEAN", {"default": False}),
+                "odeint_method": (["euler", "midpoint", "rk4","implicit_adams"], {"default": "euler"}),
+                "steps": ("INT", {"default": 30, "min": 1, "max": 100, "step": 1}),
+                "cfg": ("INT", {"default": 4, "min": 1, "max": 10, "step": 1}),
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xFFFFFFFFFFFFFFFF}),
             },
         }
 
-    CATEGORY = "MW-DiffRhythm"
+    CATEGORY = "MW/MW-DiffRhythm"
     RETURN_TYPES = ("AUDIO",)
     RETURN_NAMES = ("audio",)
     FUNCTION = "diffrhythmgen"
@@ -143,29 +175,40 @@ class DiffRhythmRun:
             self,
             model: str,
             style_prompt: str, 
-            # audio_length: int,
             lyrics_prompt: str = "", 
             style_audio: str = None,
             chunked: bool = False,
+            odeint_method: str = "euler",
+            steps: int = 30,
+            cfg: int = 4,
+            unload_model: bool = False,
             seed: int = 0):
+
+        if seed != 0:
+            torch.manual_seed(seed)
+            torch.cuda.manual_seed(seed) 
 
         if model == "cfm_model.pt":
             max_frames = 2048
         elif model == "cfm_full_model.pt": 
             max_frames = 6144
 
-        cfm, tokenizer, muq, vae = self.prepare_model(model, self.device)
+        cfm, tokenizer, muq, vae = self.prepare_model(model, self.device, unload_model)
 
         lrc_prompt, start_time = get_lrc_token(max_frames, lyrics_prompt, tokenizer, self.device)
 
+        vocal_flag = False
         if style_audio:
-            prompt = self.get_style_prompt(muq, style_audio)
+            prompt, vocal_flag = self.get_audio_style_prompt(muq, style_audio)
+        elif style_prompt:
+            prompt = self.get_text_style_prompt(muq, style_prompt)
         else:
-            prompt = self.get_style_prompt(muq, prompt=style_prompt)
+            raise ValueError("Style prompt or style audio must be provided")
 
         negative_style_prompt = get_negative_style_prompt(self.device)
         latent_prompt = get_reference_latent(self.device, max_frames)
 
+        sway_sampling_coef = -1 if steps < 32 else None
         try:
             generated_song = inference(
                 cfm_model=cfm,
@@ -175,63 +218,143 @@ class DiffRhythmRun:
                 duration=max_frames,
                 style_prompt=prompt,
                 negative_style_prompt=negative_style_prompt,
-                start_time=start_time,
+                steps=steps,
                 chunked=chunked,
+                cfg_strength=cfg,
+                sway_sampling_coef=sway_sampling_coef,
+                start_time=start_time,
+                vocal_flag=vocal_flag,
+                odeint_method=odeint_method,
             )
         except Exception as e:
             raise
 
         audio_tensor = generated_song.unsqueeze(0)
+
+        if unload_model:
+            import gc
+            del cfm
+            del tokenizer
+            del vae
+            del muq
+            gc.collect()
+            torch.cuda.empty_cache()
+
         return ({"waveform": audio_tensor, "sample_rate": 44100},)
 
-    @torch.no_grad()
-    def get_style_prompt(self, model, audio=None, prompt=None):
-        mulan = model
 
-        if prompt is not None:
-            return mulan(texts=prompt).half()
-
+    def get_audio_style_prompt(self, model, audio):
+        vocal_flag = False
         if audio is None:
-            raise ValueError("Audio data or style prompt must be provided")
-
+            return None, vocal_flag
+        mulan = model
+        
         waveform = audio["waveform"]
         sample_rate = audio["sample_rate"]
         
-        # 确保波形是正确的形状
+        # Ensure waveform has correct shape
         if len(waveform.shape) == 3:  # [1, channels, samples]
             waveform = waveform.squeeze(0)
-        if waveform.shape[0] > 1:  # 如果是立体声，转换为单声道
+        if waveform.shape[0] > 1:  # If stereo, convert to mono
             waveform = waveform.mean(0, keepdim=True)
 
-        # 计算音频长度（秒）
-        audio_len = waveform.shape[-1] / sample_rate
-        
-        if audio_len < 10:
-            raise ValueError(f"The audio is too short ({audio_len:.2f} s), it takes at least 10 seconds.")
-
-        # 提取中间 10 秒的片段
-        mid_time = int((audio_len // 2) * sample_rate)
-        start_sample = mid_time - int(5 * sample_rate)
-        end_sample = start_sample + int(10 * sample_rate)
-        wav_segment = waveform[..., start_sample:end_sample]
-
-        # 重采样到 24kHz
         if sample_rate != 24000:
-            wav_segment = torchaudio.transforms.Resample(sample_rate, 24000)(wav_segment)
+            waveform = torchaudio.transforms.Resample(sample_rate, 24000)(waveform)
 
-        # 确保形状正确并移动到正确的设备
+        # Calculate audio length (seconds)
+        audio_len = waveform.shape[-1] / 24000
+        
+        if audio_len <= 1:
+            vocal_flag = True
+        
+        if audio_len > 10:
+            start_sample = int((audio_len // 2 - 5) * 24000)
+            end_sample = start_sample + 10 * 24000
+            wav_segment = waveform[..., start_sample:end_sample]
+        else:
+            wav_segment = waveform
+            
         wav = wav_segment.to(model.device)
-        if len(wav.shape) == 1:
-            wav = wav.unsqueeze(0)
-
+        
         with torch.no_grad():
-            audio_emb = mulan(wavs=wav)  # [1, 512]
-
+            audio_emb = mulan(wavs = wav) # [1, 512]
+            
         audio_emb = audio_emb.half()
 
-        return audio_emb
+        return audio_emb, vocal_flag
+
+
+    def get_text_style_prompt(self, model, text_prompt):
+        if text_prompt is None:
+            return None
+        mulan = model
         
-    def prepare_model(self, model, device):
+        with torch.no_grad():
+            text_emb = mulan(texts = text_prompt) # [1, 512]
+        text_emb = text_emb.half()
+
+        return text_emb
+
+
+    # @torch.no_grad()
+    # def get_style_prompt(self, model, audio=None, prompt=None):
+    #     mulan = model
+
+    #     if prompt is not None:
+    #         return mulan(texts=prompt).half()
+
+    #     if audio is None:
+    #         raise ValueError("Audio data or style prompt must be provided")
+
+    #     waveform = audio["waveform"]
+    #     sample_rate = audio["sample_rate"]
+        
+    #     # Ensure waveform has correct shape
+    #     if len(waveform.shape) == 3:  # [1, channels, samples]
+    #         waveform = waveform.squeeze(0)
+    #     if waveform.shape[0] > 1:  # If stereo, convert to mono
+    #         waveform = waveform.mean(0, keepdim=True)
+
+    #     # Calculate audio length (seconds)
+    #     audio_len = waveform.shape[-1] / sample_rate
+        
+    #     if audio_len < 10:
+    #         raise ValueError(f"Audio too short ({audio_len:.2f}s), minimum 10 seconds required.")
+
+    #     # Extract middle 10-second segment
+    #     mid_time = int((audio_len // 2) * sample_rate)
+    #     start_sample = mid_time - int(5 * sample_rate)
+    #     end_sample = start_sample + int(10 * sample_rate)
+    #     wav_segment = waveform[..., start_sample:end_sample]
+
+    #     # Resample to 24kHz
+    #     if sample_rate != 24000:
+    #         wav_segment = torchaudio.transforms.Resample(sample_rate, 24000)(wav_segment)
+
+    #     # Ensure correct shape and device
+    #     wav = wav_segment.to(model.device)
+    #     if len(wav.shape) == 1:
+    #         wav = wav.unsqueeze(0)
+
+    #     with torch.no_grad():
+    #         audio_emb = mulan(wavs=wav)  # [1, 512]
+
+    #     audio_emb = audio_emb.half()
+    #     return audio_emb
+        
+    def prepare_model(self, model, device, unload_model=False):
+        # prepare tokenizer
+        try:
+            tokenizer = CNENTokenizer()
+        except Exception as e:
+            raise
+
+        if not unload_model and all(self.model_cache.values()):
+            return (self.model_cache["cfm"],
+                    tokenizer, 
+                    self.model_cache["muq"], 
+                    self.model_cache["vae"])
+
         from huggingface_hub import snapshot_download
         # prepare cfm model
         if model == "cfm_full_model.pt":
@@ -280,15 +403,8 @@ class DiffRhythmRun:
         except Exception as e:
             raise
 
-        # prepare tokenizer
-        try:
-            tokenizer = CNENTokenizer()
-        except Exception as e:
-            raise
-
         # prepare muq model
         try:
-            # 修改这部分代码
             muq = MuQMuLan.from_pretrained("OpenMuQ/MuQ-MuLan-large", cache_dir=f"{self.model_path}/DiffRhythm")
         except Exception as e:
             raise
@@ -300,6 +416,10 @@ class DiffRhythmRun:
             vae = torch.jit.load(vae_ckpt_path, map_location="cpu").to(device)
         except Exception as e:
             raise
+
+        self.model_cache["cfm"] = cfm
+        self.model_cache["muq"] = muq
+        self.model_cache["vae"] = vae
 
         return cfm, tokenizer, muq, vae
 

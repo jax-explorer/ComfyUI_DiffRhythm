@@ -116,7 +116,7 @@ class BertPolyPredict:
         self.polydataset = PolyDataset
         options = SessionOptions()  # initialize session options
         options.graph_optimization_level = GraphOptimizationLevel.ORT_ENABLE_ALL
-        print(os.path.join(bert_model, "poly_bert_model.onnx"))
+        # print(os.path.join(bert_model, "poly_bert_model.onnx"))
         self.session = InferenceSession(
             os.path.join(bert_model, "poly_bert_model.onnx"),
             sess_options=options,

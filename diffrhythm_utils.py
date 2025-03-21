@@ -1,19 +1,3 @@
-# Copyright (c) 2025 ASLP-LAB
-#               2025 Huakang Chen  (huakang@mail.nwpu.edu.cn)
-#               2025 Guobin Ma     (guobin.ma@gmail.com)
-#
-# Licensed under the Stability AI License (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#   https://huggingface.co/stabilityai/stable-audio-open-1.0/blob/main/LICENSE.md
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 import torch
 import random
 import json
@@ -22,7 +6,13 @@ import numpy as np
 
 node_dir = os.path.dirname(os.path.abspath(__file__))
 
-def decode_audio(latents, vae_model, chunked=False, overlap=32, chunk_size=128):
+def decode_audio(
+    latents: torch.Tensor,
+    vae_model: torch.nn.Module,
+    chunked: bool = False,
+    overlap: int = 32,
+    chunk_size: int = 128
+):
     downsampling_ratio = 2048
     io_channels = 2
     if not chunked:
@@ -32,7 +22,7 @@ def decode_audio(latents, vae_model, chunked=False, overlap=32, chunk_size=128):
         except Exception as e:
             raise
     else:
-        # chunked decoding
+        # Chunked decoding logic
         hop_size = chunk_size - overlap
         total_size = latents.shape[2]
         batch_size = latents.shape[0]
@@ -54,7 +44,6 @@ def decode_audio(latents, vae_model, chunked=False, overlap=32, chunk_size=128):
         y_final = torch.zeros((batch_size, io_channels, y_size)).to(latents.device)
         for i in range(num_chunks):
             x_chunk = chunks[i, :]
-            # decode the chunk
             try:
                 y_chunk = vae_model.decode_export(x_chunk)
             except Exception as e:
@@ -83,39 +72,31 @@ def decode_audio(latents, vae_model, chunked=False, overlap=32, chunk_size=128):
             y_final[:, :, t_start:t_end] = y_chunk[:, :, chunk_start:chunk_end]
         return y_final
 
-# for song edit, will be added in the future
-def get_reference_latent(device, max_frames):
+def get_reference_latent(device: torch.device, max_frames: int):
     return torch.zeros(1, max_frames, 64).to(device)
 
-
-def get_negative_style_prompt(device):
+def get_negative_style_prompt(device: torch.device):
     file_path = f"{node_dir}/vocal.npy"
     try:
-        vocal_stlye = np.load(file_path)
+        vocal_style = np.load(file_path)
     except Exception as e:
         raise
 
-    vocal_stlye = torch.from_numpy(vocal_stlye).to(device)  # [1, 512]
-    vocal_stlye = vocal_stlye.half()
-
-    return vocal_stlye
+    vocal_style = torch.from_numpy(vocal_style).to(device)  # [1, 512]
+    return vocal_style.half()
 
 def parse_lyrics(lyrics: str):
     lyrics_with_time = []
     lyrics = lyrics.strip()
-    # if lyrics == "":
-    #     raise ValueError("Lyrics can't be empty")
     for line in lyrics.split("\n"):
         try:
             time, lyric = line[1:9], line[10:]
-            lyric = lyric.strip()
             mins, secs = time.split(":")
             secs = int(mins) * 60 + float(secs)
-            lyrics_with_time.append((secs, lyric))
-        except:
+            lyrics_with_time.append((secs, lyric.strip()))
+        except ValueError:
             continue
     return lyrics_with_time
-
 
 class CNENTokenizer:
     def __init__(self):
@@ -126,7 +107,7 @@ class CNENTokenizer:
         except Exception as e:
             raise
             
-        self.id2phone = {v: k for (k, v) in self.phone2id.items()}
+        self.id2phone = {v: k for k, v in self.phone2id.items()}
         
         try:
             from g2p.g2p_generation import chn_eng_g2p
@@ -134,33 +115,33 @@ class CNENTokenizer:
         except Exception as e:
             raise
 
-    def encode(self, text):
+    def encode(self, text: str):
         try:
             phone, token = self.tokenizer(text)
-            token = [x + 1 for x in token]
-            return token
+            return [x + 1 for x in token]
         except Exception as e:
-            print(f"文本编码失败: {str(e)}")
-            import traceback
-            print(traceback.format_exc())
+            print(f"Text encoding failed: {str(e)}")
             raise
 
-    def decode(self, token):
+    def decode(self, token: list):
         try:
-            result = "|".join([self.id2phone[x - 1] for x in token])
-            return result
+            return "|".join([self.id2phone[x - 1] for x in token])
         except Exception as e:
             raise
 
-
-def get_lrc_token(max_frames, text, tokenizer, device):
-
-    # max_frames = 2048
+def get_lrc_token(
+    max_frames: int,
+    text: str,
+    tokenizer: CNENTokenizer,
+    device: torch.device
+):
+    # Audio processing parameters
     lyrics_shift = 0
     sampling_rate = 44100
     downsample_rate = 2048
     max_secs = max_frames / (sampling_rate / downsample_rate)
 
+    # Token configuration
     comma_token_id = 1
     period_token_id = 2
 
@@ -217,38 +198,3 @@ def get_lrc_token(max_frames, text, tokenizer, device):
         normalized_start_time = normalized_start_time.float()
 
     return lrc_emb, normalized_start_time
-
-
-def load_checkpoint(model, ckpt_path, device, use_ema=True):
-    model = model.half()
-    if device == 'mps':
-        model = model.float()
-
-    ckpt_type = ckpt_path.split(".")[-1]
-    try:
-        if ckpt_type == "safetensors":
-            from safetensors.torch import load_file
-            checkpoint = load_file(ckpt_path)
-        else:
-            checkpoint = torch.load(ckpt_path, weights_only=True)
-    except Exception as e:
-        raise
-
-    try:
-        if use_ema:
-            if ckpt_type == "safetensors":
-                checkpoint = {"ema_model_state_dict": checkpoint}
-            checkpoint["model_state_dict"] = {
-                k.replace("ema_model.", ""): v
-                for k, v in checkpoint["ema_model_state_dict"].items()
-                if k not in ["initted", "step"]
-            }
-            model.load_state_dict(checkpoint["model_state_dict"], strict=False)
-        else:
-            if ckpt_type == "safetensors":
-                checkpoint = {"model_state_dict": checkpoint}
-            model.load_state_dict(checkpoint["model_state_dict"], strict=False)
-    except Exception as e:
-        raise
-
-    return model.to(device)
