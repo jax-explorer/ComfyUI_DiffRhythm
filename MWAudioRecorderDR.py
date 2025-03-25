@@ -17,7 +17,6 @@ class AudioRecorderDR:
                 "record_sec": ("INT", {
                     "default": 5,
                     "min": 1,
-                    "max": 60,
                     "step": 1
                 }),
                 "sample_rate": (["16000", "44100", "48000"], {
@@ -31,14 +30,14 @@ class AudioRecorderDR:
                 }),
                 "sensitivity": ("FLOAT", {
                     "default": 1.2,
-                    "min": 0.5,
+                    "min": 0.1,
                     "max": 3.0,
                     "step": 0.1
                 }),
                 "smooth": ("INT", {
-                    "default": 5,
-                    "min": 1,
-                    "max": 11,
+                    "default": 1,
+                    "min": 5,
+                    "max": 7,
                     "step": 2
                 }),
                 "seed": ("INT", {
@@ -52,7 +51,7 @@ class AudioRecorderDR:
     RETURN_TYPES = ("AUDIO",)
     RETURN_NAMES = ("audio",)
     FUNCTION = "record_and_clean"
-    CATEGORY = "MW/MW-DiffRhythm"
+    CATEGORY = "🎤MW/MW-DiffRhythm"
 
     def _stft(self, y, n_fft):
         hop = n_fft // 4

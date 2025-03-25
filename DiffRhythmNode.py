@@ -122,7 +122,7 @@ class MultiLinePrompt:
                 },
         }
 
-    CATEGORY = "MW/MW-DiffRhythm"
+    CATEGORY = "🎤MW/MW-DiffRhythm"
     RETURN_TYPES = ("STRING",)
     RETURN_NAMES = ("prompt",)
     FUNCTION = "promptgen"
@@ -166,7 +166,7 @@ class DiffRhythmRun:
             },
         }
 
-    CATEGORY = "MW/MW-DiffRhythm"
+    CATEGORY = "🎤MW/MW-DiffRhythm"
     RETURN_TYPES = ("AUDIO",)
     RETURN_NAMES = ("audio",)
     FUNCTION = "diffrhythmgen"
@@ -295,52 +295,6 @@ class DiffRhythmRun:
 
         return text_emb
 
-
-    # @torch.no_grad()
-    # def get_style_prompt(self, model, audio=None, prompt=None):
-    #     mulan = model
-
-    #     if prompt is not None:
-    #         return mulan(texts=prompt).half()
-
-    #     if audio is None:
-    #         raise ValueError("Audio data or style prompt must be provided")
-
-    #     waveform = audio["waveform"]
-    #     sample_rate = audio["sample_rate"]
-        
-    #     # Ensure waveform has correct shape
-    #     if len(waveform.shape) == 3:  # [1, channels, samples]
-    #         waveform = waveform.squeeze(0)
-    #     if waveform.shape[0] > 1:  # If stereo, convert to mono
-    #         waveform = waveform.mean(0, keepdim=True)
-
-    #     # Calculate audio length (seconds)
-    #     audio_len = waveform.shape[-1] / sample_rate
-        
-    #     if audio_len < 10:
-    #         raise ValueError(f"Audio too short ({audio_len:.2f}s), minimum 10 seconds required.")
-
-    #     # Extract middle 10-second segment
-    #     mid_time = int((audio_len // 2) * sample_rate)
-    #     start_sample = mid_time - int(5 * sample_rate)
-    #     end_sample = start_sample + int(10 * sample_rate)
-    #     wav_segment = waveform[..., start_sample:end_sample]
-
-    #     # Resample to 24kHz
-    #     if sample_rate != 24000:
-    #         wav_segment = torchaudio.transforms.Resample(sample_rate, 24000)(wav_segment)
-
-    #     # Ensure correct shape and device
-    #     wav = wav_segment.to(model.device)
-    #     if len(wav.shape) == 1:
-    #         wav = wav.unsqueeze(0)
-
-    #     with torch.no_grad():
-    #         audio_emb = mulan(wavs=wav)  # [1, 512]
-
-    #     audio_emb = audio_emb.half()
-    #     return audio_emb
         
     def prepare_model(self, model, device, unload_model=False):
         # prepare tokenizer
