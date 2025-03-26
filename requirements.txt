@@ -1,3 +1,4 @@
+LangSegment
 x-transformers
 pylance
 ema-pytorch
