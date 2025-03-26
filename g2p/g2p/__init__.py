@@ -6,7 +6,7 @@
 from g2p.g2p import cleaners
 from tokenizers import Tokenizer
 from g2p.g2p.text_tokenizers import TextTokenizer
-import LangSegment
+from LangSegment import setfilters, getTexts
 import json
 import os
 
@@ -29,7 +29,7 @@ class PhonemeBpeTokenizer:
             json_data = f.read()
         data = json.loads(json_data)
         self.vocab = data["vocab"]
-        LangSegment.setfilters(["en", "zh", "ko", "fr", "de"])
+        setfilters(["en", "zh", "ko", "fr", "de"])
 
     def int_text_tokenizers(self):
         for key, value in self.lang2backend.items():
@@ -40,7 +40,7 @@ class PhonemeBpeTokenizer:
         # 1. convert text to phoneme
         phonemes = []
         if language == "auto":
-            seglist = LangSegment.getTexts(text)
+            seglist = getTexts(text)
             tmp_ph = []
             for seg in seglist:
                 tmp_ph.append(
